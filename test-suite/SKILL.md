@@ -211,6 +211,34 @@ Reporte: .forge/reports/test-{timestamp}.json
 Siguiente: /fix (si hay bugs) | /review (si todo verde)
 ```
 
+## Browser Testing (para QA de web apps)
+
+Si el plan incluye testing de UI/browser, usar forge browser:
+
+```bash
+# Setup (una vez)
+cd .claude/skills/forge/browser && npm install && npx playwright install chromium
+
+# Nivel 1: script mode (cada comando abre/cierra browser)
+BROWSE="node .claude/skills/forge/browser/browse.mjs"
+$BROWSE goto https://localhost:3000
+$BROWSE snapshot -i          # ver elementos interactivos con @refs
+$BROWSE click "@e3"          # click por ref
+$BROWSE fill "@e5" "test@example.com"
+$BROWSE screenshot evidence.png
+
+# Nivel 2: daemon mode (sesión persistente, login se mantiene)
+node .claude/skills/forge/browser/daemon.mjs start
+# ... comandos van al daemon via --daemon flag ...
+node .claude/skills/forge/browser/daemon.mjs stop
+```
+
+El browser se usa para:
+- Verificar que la UI renderiza correctamente
+- Testear flujos de usuario (login, forms, checkout)
+- Capturar screenshots como evidencia
+- NO para unit tests (esos van con el test runner del proyecto)
+
 ## Reglas
 
 - **Tests son código de producción.** Misma calidad, mismos estándares.

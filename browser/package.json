@@ -1,0 +1,16 @@
+{
+  "name": "@forge/browser",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Browser toolkit for forge QA testing",
+  "scripts": {
+    "browse": "node browse.mjs",
+    "daemon:start": "node daemon.mjs start",
+    "daemon:stop": "node daemon.mjs stop",
+    "daemon:status": "node daemon.mjs status",
+    "install-browser": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}
