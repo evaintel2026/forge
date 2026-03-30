@@ -1,10 +1,10 @@
 ---
 name: build
-version: 1.0.0
+version: 2.0.0
 description: |
   Orquestador principal. Encadena plan → implement → test → fix → review → ship
-  usando sub-agentes. El flujo completo en un comando.
-  Use when: "build this", "construir", "implementar feature completa", "hazlo todo".
+  usando procesos aislados con contexto limpio. Cada agente nace, trabaja, muere.
+  Use when: "build this", "construir", "implementar feature completa".
 allowed-tools:
   - Bash
   - Read
@@ -16,10 +16,35 @@ allowed-tools:
   - Agent
 ---
 
-# /build — Orquestador del Flujo Completo
+# /build — Orquestador con Context Isolation
 
-Eres el director de orquesta. Coordinas sub-agentes para ejecutar el flujo
-completo: plan → implement → test → fix → review → ship.
+Coordinas el flujo completo. Cada paso se ejecuta en un **proceso aislado**
+con contexto limpio. La comunicación es por archivos, no por contexto.
+
+## Arquitectura de Context Isolation
+
+```
+/build (orquestador — contexto limpio)
+    │
+    │  Escribe: .forge/tasks/plan-{slug}.md
+    │  Spawn:   claude -p (proceso nuevo, contexto 0%)
+    │  Lee:     .forge/results/plan-{slug}.json (resumen ~30 líneas)
+    │
+    │  Escribe: .forge/tasks/impl-T1.md
+    │  Spawn:   claude -p (proceso nuevo, contexto 0%)
+    │  Lee:     .forge/results/impl-T1.json (resumen ~20 líneas)
+    │
+    │  Escribe: .forge/tasks/impl-T2.md
+    │  Spawn:   claude -p (proceso nuevo, contexto 0%)  ← PARALELO si independiente
+    │  Lee:     .forge/results/impl-T2.json
+    │
+    │  ... (test, fix, review — cada uno proceso aislado)
+    │
+    └── El orquestador NUNCA lee diffs/código directamente
+        Solo lee JSONs de resultado (~resúmenes)
+```
+
+**Regla de oro: el orquestador consume ~5% del contexto. Los workers se queman y mueren.**
 
 ## Invocación
 
@@ -29,146 +54,233 @@ completo: plan → implement → test → fix → review → ship.
 - `/build --skip-plan` — saltar planificación (plan ya existe)
 - `/build --dry-run` — solo planificar, no implementar
 
+## Directorios de trabajo
+
+```bash
+mkdir -p .forge/{tasks,results,builds,plans,reports}
+```
+
 ## Flujo Principal
 
-```
-┌─────────────────────────────────────────────────┐
-│                    /build                         │
-│                                                   │
-│  1. /plan ──────→ Plan aprobado                   │
-│                    │                              │
-│  2. /implement ──→ Tasks T1..TN (sub-agentes)    │
-│       │            │                              │
-│       │   ┌────────┘                              │
-│       │   ↓                                       │
-│  3. /test ──────→ Suite verde?                    │
-│       │            │                              │
-│       │   NO ←─────┘                              │
-│       │   │                                       │
-│  4. /fix ───────→ Fix loop hasta verde            │
-│       │            │                              │
-│       │   ┌────────┘                              │
-│       │   ↓                                       │
-│  5. /review ────→ Clean?                          │
-│       │            │                              │
-│       │   NO ←─────┘                              │
-│       │   │                                       │
-│       │   /fix → /test → /review (loop)           │
-│       │            │                              │
-│       ↓   ┌────────┘                              │
-│  6. /ship ──────→ PR creado ✅                    │
-│                                                   │
-└─────────────────────────────────────────────────┘
-```
+### Fase 1: Planificación (interactivo)
 
-## Instrucciones
+La planificación es INTERACTIVA (no aislada) porque requiere aprobación del usuario.
 
-### Fase 1: Planificación
+1. Ejecutar `/plan` normalmente
+2. Esperar aprobación del usuario
+3. Guardar plan aprobado en `.forge/plans/{slug}.md`
 
-Ejecutar `/plan` con el request del usuario.
+### Fase 2: Implementación (aislada, parallelizable)
 
-- Presentar plan al usuario
-- **ESPERAR APROBACIÓN** — no continuar sin ok del usuario
-- Si el usuario modifica el plan, guardar cambios
+Para cada tarea del plan, crear un task file y spawnearlo:
 
-### Fase 2: Implementación
+**Escribir task file** `.forge/tasks/impl-T{N}.md`:
 
-Para cada tarea del plan (respetando orden de dependencias):
+```markdown
+# Task: impl-T{N}
 
-**Tareas independientes → paralelo (sub-agentes):**
-```
-Si T1 y T2 no tienen dependencias entre sí:
-  Sub-agente A: /implement T1
-  Sub-agente B: /implement T2
-  Esperar ambos
-```
+## Tipo
+implement
 
-**Tareas con dependencias → secuencial:**
-```
-Si T3 depende de T1:
-  Esperar T1 completado
-  Sub-agente C: /implement T3
+## Objetivo
+{Copiar título y descripción de la tarea del plan}
+
+## Input
+- Plan: .forge/plans/{slug}.md (solo sección T{N})
+- Archivos a leer: {lista EXACTA de archivos que necesita}
+- Archivos a crear/modificar: {lista EXACTA}
+
+## Criterio de aceptación
+{Copiar del plan}
+
+## Output
+Escribir en: .forge/results/impl-T{N}.json
+
+## Formato resultado
+{
+  "task": "T{N}",
+  "status": "done | error | blocked",
+  "files_changed": ["path/to/file.ts"],
+  "commit": "abc1234",
+  "commit_message": "feat: ...",
+  "compilation": true,
+  "notes": "cualquier observación"
+}
+
+## Reglas
+- UN commit atómico para esta tarea
+- NO modificar archivos fuera del scope listado
+- Verificar compilación antes de commitear
+- Si falla después de 2 intentos, reportar error
 ```
 
-Después de cada batch de implementación:
-1. Verificar que el proyecto compila
-2. Correr tests existentes (regression check)
-3. Si algo falla → `/fix` antes de continuar
+**Spawn:**
 
-**Progress reporting:**
+```bash
+# Secuencial (tareas con dependencias)
+chmod +x .claude/skills/forge/lib/spawn.sh
+.claude/skills/forge/lib/spawn.sh .forge/tasks/impl-T1.md .forge/results/impl-T1.json 300
+
+# Paralelo (tareas independientes)
+.claude/skills/forge/lib/spawn.sh .forge/tasks/impl-T1.md .forge/results/impl-T1.json 300 &
+.claude/skills/forge/lib/spawn.sh .forge/tasks/impl-T2.md .forge/results/impl-T2.json 300 &
+wait
+```
+
+**Leer resultado** (solo el JSON, no el código):
+
+```bash
+cat .forge/results/impl-T1.json
+```
+
+Verificar status. Si `"error"` o `"blocked"` → decidir si reintentar o escalar.
+
+**Progreso:**
 ```
 BUILD: {feature}
 ═══════════════
 Fase 2: Implementación
 
-[✅] T1: Create payment model (abc1234)
-[✅] T2: Add Stripe SDK config (def5678)
-[🔄] T3: Implement checkout flow...
+[✅] T1: Create payment model (abc1234) — 45s
+[✅] T2: Add Stripe SDK config (def5678) — 32s
+[🔄] T3: Implement checkout flow — spawned...
 [⏳] T4: Webhook handler (waiting T3)
 [⏳] T5: Tests
+
+Context usage: ~8% (orquestador solo lee JSONs)
 ```
 
-### Fase 3: Testing
+### Fase 3: Testing (aislado)
 
-Ejecutar `/test` para todo lo implementado.
+**Task file** `.forge/tasks/test-{slug}.md`:
 
-- Si todo verde → fase 4
-- Si hay fallos → fase 3.5
+```markdown
+# Task: test-{slug}
 
-### Fase 3.5: Fix Loop
+## Tipo
+test
 
-Ejecutar `/fix` para bugs encontrados.
+## Objetivo
+Generar tests y correr suite para los cambios del plan {slug}.
 
-```
-Intento 1: /fix → /test
-  ├─→ ✅ Todo verde → fase 4
-  └─→ ❌ Fallos → Intento 2
+## Input
+- Plan: .forge/plans/{slug}.md (sección de tests)
+- Archivos implementados: {lista de archivos que se cambiaron, desde los results}
+- Test framework: {detectado o desde config}
+- Test command: {comando}
 
-Intento 2: /fix → /test
-  ├─→ ✅ Todo verde → fase 4
-  └─→ ❌ Fallos → Intento 3
+## Output
+Escribir en: .forge/results/test-{slug}.json
 
-Intento 3: /fix → /test
-  ├─→ ✅ Todo verde → fase 4
-  └─→ ❌ Fallos → ESCALAR al usuario
-```
-
-**Máximo 3 ciclos fix→test.** Si después de 3 no está verde, escalar:
-
-```
-BUILD: BLOCKED
-═══════════════
-3 ciclos de fix sin resolver todos los bugs.
-
-Bugs persistentes:
-  1. {descripción} — {qué intenté}
-  2. {descripción} — {qué intenté}
-
-Opciones:
-  A) Yo investigo y te explico el problema en detalle
-  B) Continuar review con bugs conocidos (no recomendado)
-  C) Abortar build, mantener los commits que sí funcionan
+## Formato resultado
+{
+  "status": "green | red",
+  "total": 25,
+  "passed": 23,
+  "failed": 2,
+  "coverage": {"lines": 87, "branches": 78},
+  "failures": [
+    {"test": "name", "file": "path:line", "error": "message", "source": "path:line"}
+  ],
+  "gaps": [
+    {"file": "path", "lines": "range", "description": "qué falta"}
+  ]
+}
 ```
 
-### Fase 4: Review
+Leer resultado. Si `"red"` → Fase 3.5.
 
-Ejecutar `/review` del diff completo.
+### Fase 3.5: Fix Loop (aislado, max 3 ciclos)
 
-- Si CLEAN → fase 5
-- Si CRITICAL findings → `/fix` → re-review (max 2 ciclos)
-- Si solo HIGH/MEDIUM → presentar al usuario, preguntar si proceder
+Para cada bug del test result:
 
-### Fase 5: Ship
+**Task file** `.forge/tasks/fix-F{N}.md`:
 
-Ejecutar `/ship`:
-1. Generar changelog entry
-2. Version bump (si configurado)
-3. Crear PR
-4. Presentar resumen final
+```markdown
+# Task: fix-F{N}
 
-### Estado Persistente
+## Tipo
+fix
 
-Guardar estado del build en `.forge/builds/{slug}.json`:
+## Objetivo
+Arreglar bug: {test name} — {error message}
+
+## Input
+- Archivo con bug: {source_file}:{source_line}
+- Test que falla: {test_file}:{test_line}
+- Error: {error message completo}
+
+## Output
+Escribir en: .forge/results/fix-F{N}.json
+
+## Formato resultado
+{
+  "bug": "F{N}",
+  "status": "fixed | failed",
+  "root_cause": "descripción de la causa raíz",
+  "fix": "qué se cambió",
+  "commit": "hash",
+  "test_passes": true
+}
+```
+
+Después de fixes → re-spawn test agent → leer resultado → loop si necesario.
+
+```
+Fix cycle: 1/3
+  Fix F1 → spawned → done (fixed)
+  Fix F2 → spawned → done (fixed)
+  Re-test → spawned → result: GREEN ✅
+
+  (o si RED → cycle 2/3 → ...)
+```
+
+**Máximo 3 ciclos.** Si después de 3 no está verde → escalar al usuario.
+
+### Fase 4: Review (aislado)
+
+**Task file** `.forge/tasks/review-{slug}.md`:
+
+```markdown
+# Task: review-{slug}
+
+## Tipo
+review
+
+## Objetivo
+Code review del branch actual contra {base}.
+
+## Input
+- Plan: .forge/plans/{slug}.md
+- Diff: ejecutar git diff origin/{base}
+- Config: .forge/config.yaml (confidence_gate)
+
+## Output
+Escribir en: .forge/results/review-{slug}.json
+
+## Formato resultado
+{
+  "status": "clean | concerns | blocked",
+  "plan_completion": {"done": 5, "partial": 1, "not_done": 0},
+  "findings": [
+    {"severity": "CRITICAL", "confidence": 9, "file": "path:line", "description": "..."}
+  ],
+  "summary": {"critical": 0, "high": 1, "medium": 2}
+}
+```
+
+Si `"blocked"` (CRITICAL findings) → spawn fix agents → re-review (max 2 ciclos).
+Si `"concerns"` → presentar al usuario.
+Si `"clean"` → fase 5.
+
+### Fase 5: Ship (interactivo)
+
+El ship es INTERACTIVO porque el usuario debe aprobar el PR.
+Ejecutar `/ship` normalmente.
+
+## Estado Persistente
+
+`.forge/builds/{slug}.json` — permite `/build --resume`:
 
 ```json
 {
@@ -178,47 +290,48 @@ Guardar estado del build en `.forge/builds/{slug}.json`:
   "started_at": "ISO-8601",
   "phase": "implement",
   "tasks": {
-    "T1": { "status": "done", "commit": "abc1234" },
-    "T2": { "status": "done", "commit": "def5678" },
-    "T3": { "status": "in_progress" },
-    "T4": { "status": "pending" }
+    "T1": {"status": "done", "result": ".forge/results/impl-T1.json"},
+    "T2": {"status": "done", "result": ".forge/results/impl-T2.json"},
+    "T3": {"status": "in_progress", "task_file": ".forge/tasks/impl-T3.md"},
+    "T4": {"status": "pending"}
   },
   "test_cycles": 0,
   "fix_cycles": 0,
-  "review_status": null
+  "review_status": null,
+  "context_usage": {
+    "orchestrator_tokens": "~2000",
+    "workers_spawned": 4,
+    "note": "Each worker used fresh context"
+  }
 }
 ```
 
-Esto permite `/build --resume` si se interrumpe.
-
 ## Resumen Final
-
-Al completar todo el flujo:
 
 ```
 BUILD COMPLETE: {feature} ✅
 ═══════════════════════════
 Branch: feature/{slug}
-Plan: .forge/plans/{slug}.md
 PR: #{number}
 
 Tareas: {N}/{N} completadas
-Tests: {passed}/{total} pasando, {coverage}% coverage
-Review: CLEAN (0 critical, 0 high)
-Commits: {N} ({M} implementation, {K} tests, {J} fixes)
+Tests: {passed}/{total}, {coverage}% coverage
+Review: CLEAN
+Commits: {N}
 
-Tiempo: {duration}
-Fix cycles: {N}
+Workers spawned: {M} (each with clean context)
+Fix cycles: {K}
+Total time: {duration}
 
-Changelog entry added.
-Ready to merge.
+No context window was harmed in the making of this feature. 🧠
 ```
 
 ## Reglas
 
-- **El usuario aprueba el plan.** No implementar sin aprobación.
-- **Paralelo cuando se puede.** Tareas independientes van en paralelo.
-- **3 ciclos máximo por loop.** Fix→test, fix→review. No loops infinitos.
-- **Estado persistente.** Si se interrumpe, se puede continuar.
-- **Transparencia total.** El usuario ve qué pasa en cada momento.
-- **Escalar > insistir.** Si algo no sale después de 3 intentos, preguntar.
+- **El orquestador NO lee código/diffs.** Solo task files y result JSONs.
+- **Cada worker es un proceso aislado.** Nace, trabaja, muere. Sin acumulación.
+- **Task files son mínimos.** < 100 líneas, lista EXACTA de archivos a leer.
+- **Result files son resúmenes.** < 50 líneas JSON, no código completo.
+- **Paralelo cuando se puede.** Tareas independientes = spawns paralelos.
+- **3 ciclos máximo por loop.** No loops infinitos.
+- **Plan y ship son interactivos.** El humano aprueba el inicio y el final.
