@@ -1,0 +1,40 @@
+#!/bin/bash
+# Forge pre-push hook
+# Instalar: cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+
+set -e
+
+# 1. No push directo a main/master
+BRANCH=$(git branch --show-current)
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "🔴 FORGE: Direct push to $BRANCH blocked."
+  echo "   Create a branch: git checkout -b feature/my-feature"
+  echo "   Then push and create a PR."
+  exit 1
+fi
+
+# 2. Tests deben pasar (si hay comando de test)
+if [ -f package.json ] && grep -q '"test"' package.json; then
+  echo "🔄 FORGE: Running tests before push..."
+  npm test 2>&1 || {
+    echo "🔴 FORGE: Tests failing. Fix before pushing."
+    exit 1
+  }
+elif [ -f Makefile ] && grep -q '^test:' Makefile; then
+  echo "🔄 FORGE: Running tests before push..."
+  make test 2>&1 || {
+    echo "🔴 FORGE: Tests failing. Fix before pushing."
+    exit 1
+  }
+fi
+
+# 3. Security quick scan (secrets in diff)
+SECRETS_PATTERN='AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|password\s*=\s*["\x27][^"\x27]{8,}'
+BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
+if git diff origin/$BASE..HEAD | grep -qE "$SECRETS_PATTERN"; then
+  echo "🟡 FORGE: Possible secrets in diff. Review before pushing."
+  echo "   Run: git diff origin/$BASE..HEAD | grep -E '$SECRETS_PATTERN'"
+  # Warning only, not blocking
+fi
+
+echo "✅ FORGE: Pre-push checks passed."

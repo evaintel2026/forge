@@ -1,0 +1,37 @@
+# .forge/config.yaml — Configuración del proyecto para Forge
+# Copiar a la raíz de tu proyecto como .forge/config.yaml
+
+project:
+  name: mi-proyecto
+  language: typescript  # typescript | python | rust | go | ruby | php
+  framework: ""         # nextjs | express | fastapi | django | rails | etc
+
+testing:
+  command: "npm test"   # comando para correr tests
+  coverage: true        # generar reporte de coverage
+  min_coverage: 80      # % mínimo de coverage aceptable
+  framework: ""         # jest | vitest | pytest | rspec | go-test (auto-detect si vacío)
+
+review:
+  confidence_gate: 8    # 1-10, findings debajo de esto se filtran (daily mode)
+  security_scan: true   # correr /cso mini como parte del review
+  auto_fix: false       # arreglar findings automáticamente (experimental)
+
+ship:
+  require_tests: true   # bloquear ship si tests fallan
+  require_review: true  # bloquear ship si no hay review reciente
+  changelog: true       # generar changelog entry
+  version_bump: patch   # patch | minor | major | auto | none
+  draft_pr: false       # crear PR como draft
+
+build:
+  max_fix_cycles: 3     # máximo ciclos fix→test antes de escalar
+  parallel_tasks: true  # implementar tareas independientes en paralelo
+  auto_approve_plan: false  # true = no esperar aprobación del plan
+
+hooks:
+  pre_commit: true      # instalar pre-commit hook
+  pre_push: true        # instalar pre-push hook
+  block_main_push: true # bloquear push directo a main
+  check_secrets: true   # buscar secrets en commits
+  check_frozen: true    # proteger archivos frozen
